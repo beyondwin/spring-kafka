@@ -53,6 +53,7 @@ import org.springframework.util.backoff.BackOffExecution;
  * @author Francois Rosiere
  * @author Wang Zhiyang
  * @author Sanghyeok An
+ * @author WooSeung Kim
  *
  * @since 1.3.5
  *
@@ -68,7 +69,7 @@ public class DefaultAfterRollbackProcessor<K, V> extends FailedRecordProcessor
 
 	private final @Nullable KafkaOperations<?, ?> kafkaTemplate;
 
-	private final BiConsumer<ConsumerRecords<?, ?>, Exception> recoverer;
+	private final @Nullable ConsumerAwareRecordRecoverer recoverer;
 
 	/**
 	 * Construct an instance with the default recoverer which simply logs the record after
@@ -152,11 +153,12 @@ public class DefaultAfterRollbackProcessor<K, V> extends FailedRecordProcessor
 		super.setCommitRecovered(commitRecovered);
 		checkConfig();
 		this.backOff = backOff;
-		this.recoverer = (crs, ex) -> {
-			if (recoverer != null && !crs.isEmpty()) {
-				crs.spliterator().forEachRemaining(rec -> recoverer.accept(rec, ex));
-			}
-		};
+		if (recoverer == null || recoverer instanceof ConsumerAwareRecordRecoverer) {
+			this.recoverer = (ConsumerAwareRecordRecoverer) recoverer;
+		}
+		else {
+			this.recoverer = (rec, consumer, ex) -> recoverer.accept(rec, ex);
+		}
 	}
 
 	private void checkConfig() {
@@ -209,7 +211,10 @@ public class DefaultAfterRollbackProcessor<K, V> extends FailedRecordProcessor
 			}
 
 			try {
-				this.recoverer.accept(records, exception);
+				ConsumerAwareRecordRecoverer theRecoverer = this.recoverer;
+				if (theRecoverer != null) {
+					records.forEach(rec -> theRecoverer.accept(rec, consumer, exception));
+				}
 				Map<TopicPartition, OffsetAndMetadata> offsets = new HashMap<>();
 				records.forEach(rec -> offsets.put(new TopicPartition(rec.topic(), rec.partition()),
 						ListenerUtils.createOffsetAndMetadata(container, rec.offset() + 1)));
